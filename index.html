@@ -1164,6 +1164,47 @@
   if (typeof gapi !== 'undefined') gapiLoaded();
   if (typeof google !== 'undefined') gisLoaded();
 
+  // Multi-currency price extractor (detects currency but only returns EUR)
+  function extractPrice(body) {
+    // Try EUR first (multiple formats)
+    const eurPatterns = [
+      /€\s*(\d+[.,]\d{2})/,                           // €50.00 or €50,00
+      /(\d+[.,]\d{2})\s*€/,                           // 50.00€ or 50,00€
+      /(\d+[.,]\d{2})\s*EUR/i,                        // 50.00 EUR
+      /EUR\s*(\d+[.,]\d{2})/i,                        // EUR 50.00
+      /Total[:\s]+€?\s*(\d+[.,]\d{2})/i,              // Total: €50.00
+      /Price[:\s]+€?\s*(\d+[.,]\d{2})/i,              // Price: €50.00
+      /Amount[:\s]+€?\s*(\d+[.,]\d{2})/i              // Amount: €50.00
+    ];
+
+    for (const pattern of eurPatterns) {
+      const match = body.match(pattern);
+      if (match) {
+        const price = parseFloat(match[1].replace(',', '.'));
+        return { price, currency: 'EUR' };
+      }
+    }
+
+    // Detect other currencies (but don't import them)
+    const otherCurrencies = [
+      { pattern: /\$\s*(\d+[.,]\d{2})|(\d+[.,]\d{2})\s*USD/i, code: 'USD' },
+      { pattern: /£\s*(\d+[.,]\d{2})|(\d+[.,]\d{2})\s*GBP/i, code: 'GBP' },
+      { pattern: /¥\s*(\d+)|(\d+)\s*JPY/i, code: 'JPY' },
+      { pattern: /(\d+[.,]\d{2})\s*AUD/i, code: 'AUD' },
+      { pattern: /(\d+[.,]\d{2})\s*CAD/i, code: 'CAD' }
+    ];
+
+    for (const curr of otherCurrencies) {
+      const match = body.match(curr.pattern);
+      if (match) {
+        const price = parseFloat((match[1] || match[2]).replace(',', '.'));
+        return { price, currency: curr.code };
+      }
+    }
+
+    return { price: 0, currency: null };
+  }
+
   // Email parsing functions for each platform
   const EmailParsers = {
     // PlayStation Store
@@ -1178,9 +1219,8 @@
         let name = subject.replace(/Your purchase|Thank you for your purchase|Receipt/gi, '').trim();
         name = name.replace(/[:\-–]/g, '').trim();
 
-        // Try to find price (EUR format)
-        const priceMatch = body.match(/€\s*(\d+[.,]\d{2})|(\d+[.,]\d{2})\s*EUR/i);
-        const price = priceMatch ? parseFloat(priceMatch[1] || priceMatch[2].replace(',', '.')) : 0;
+        // Extract price
+        const { price, currency } = extractPrice(body);
 
         // If name is empty or too short, try to extract from body
         if (!name || name.length < 3) {
@@ -1190,7 +1230,7 @@
           if (titleMatch) name = titleMatch[1].trim();
         }
 
-        return { name, price, platform: 'PlayStation' };
+        return { name, price, currency, platform: 'PlayStation' };
       }
     },
 
@@ -1206,10 +1246,8 @@
         let name = subject.replace(/Nintendo eShop Purchase|Your Nintendo eShop receipt|Receipt/gi, '').trim();
         name = name.replace(/[:\-–]/g, '').trim();
 
-        // Try to find price
-        const priceMatch = body.match(/€\s*(\d+[.,]\d{2})|(\d+[.,]\d{2})\s*EUR/i) ||
-                          body.match(/Total[:\s]+€?\s*(\d+[.,]\d{2})/i);
-        const price = priceMatch ? parseFloat((priceMatch[1] || priceMatch[2]).replace(',', '.')) : 0;
+        // Extract price
+        const { price, currency } = extractPrice(body);
 
         // Extract from body if needed
         if (!name || name.length < 3) {
@@ -1219,7 +1257,7 @@
           if (titleMatch) name = titleMatch[1].trim();
         }
 
-        return { name, price, platform: 'Switch' };
+        return { name, price, currency, platform: 'Switch' };
       }
     },
 
@@ -1235,10 +1273,8 @@
         let name = subject.replace(/Your receipt from Microsoft|Xbox purchase|Receipt/gi, '').trim();
         name = name.replace(/[:\-–]/g, '').trim();
 
-        // Try to find price
-        const priceMatch = body.match(/€\s*(\d+[.,]\d{2})|(\d+[.,]\d{2})\s*EUR/i) ||
-                          body.match(/Total[:\s]+€?\s*(\d+[.,]\d{2})/i);
-        const price = priceMatch ? parseFloat((priceMatch[1] || priceMatch[2]).replace(',', '.')) : 0;
+        // Extract price
+        const { price, currency } = extractPrice(body);
 
         // Extract from body if needed
         if (!name || name.length < 3) {
@@ -1248,7 +1284,7 @@
           if (titleMatch) name = titleMatch[1].trim();
         }
 
-        return { name, price, platform: 'Xbox' };
+        return { name, price, currency, platform: 'Xbox' };
       }
     },
 
@@ -1264,10 +1300,8 @@
         let name = subject.replace(/Thank you for your Steam purchase|Your Steam purchase|Receipt/gi, '').trim();
         name = name.replace(/[:\-–]/g, '').trim();
 
-        // Try to find price
-        const priceMatch = body.match(/€\s*(\d+[.,]\d{2})|(\d+[.,]\d{2})\s*EUR/i) ||
-                          body.match(/Total[:\s]+€?\s*(\d+[.,]\d{2})/i);
-        const price = priceMatch ? parseFloat((priceMatch[1] || priceMatch[2]).replace(',', '.')) : 0;
+        // Extract price
+        const { price, currency } = extractPrice(body);
 
         // Extract from body if needed
         if (!name || name.length < 3) {
@@ -1276,7 +1310,7 @@
           if (titleMatch) name = titleMatch[1].trim();
         }
 
-        return { name, price, platform: 'PC' };
+        return { name, price, currency, platform: 'PC' };
       }
     }
   };
@@ -1332,11 +1366,25 @@
         try {
           const parsed = parser.parse(email);
           if (parsed.name && parsed.price > 0) {
-            return {
-              ...parsed,
-              date: email.date.toISOString().split('T')[0],
-              notes: `Auto-imported from ${from.split('<')[0].trim()}`
-            };
+            // Only return EUR purchases for import
+            if (parsed.currency === 'EUR') {
+              return {
+                name: parsed.name,
+                price: parsed.price,
+                platform: parsed.platform,
+                date: email.date.toISOString().split('T')[0],
+                notes: `Auto-imported from ${from.split('<')[0].trim()}`
+              };
+            } else {
+              // Return with skipReason for non-EUR purchases
+              return {
+                name: parsed.name,
+                price: parsed.price,
+                platform: parsed.platform,
+                currency: parsed.currency,
+                skipReason: `Non-EUR currency (${parsed.currency})`
+              };
+            }
           }
         } catch (e) {
           console.error(`Error parsing ${key} email:`, e);
@@ -1388,6 +1436,8 @@
 
         let totalImported = 0;
         let totalScanned = 0;
+        let totalSkippedNonEur = 0;
+        let totalSkippedDuplicate = 0;
 
         for (const query of queries) {
           try {
@@ -1410,11 +1460,19 @@
 
                 const purchase = parseEmail(fullMessage.result);
 
-                if (purchase && !isDuplicate(purchase)) {
-                  const id = await dbAdd('purchases', purchase);
-                  purchase.id = id;
-                  purchases.push(purchase);
-                  totalImported++;
+                if (purchase) {
+                  // Check if this is a non-EUR purchase (has skipReason)
+                  if (purchase.skipReason) {
+                    totalSkippedNonEur++;
+                    console.log(`Skipped: ${purchase.name} (${purchase.skipReason})`);
+                  } else if (isDuplicate(purchase)) {
+                    totalSkippedDuplicate++;
+                  } else {
+                    const id = await dbAdd('purchases', purchase);
+                    purchase.id = id;
+                    purchases.push(purchase);
+                    totalImported++;
+                  }
                 }
               } catch (e) {
                 console.error('Error processing message:', e);
@@ -1430,7 +1488,13 @@
         syncBtn.disabled = false;
         syncIcon.textContent = '✓';
         syncText.textContent = 'Sync Complete';
-        syncStatus.textContent = `Scanned ${totalScanned} emails, imported ${totalImported} new purchases`;
+
+        // Build status message
+        let statusParts = [`Scanned ${totalScanned} emails`];
+        if (totalImported > 0) statusParts.push(`imported ${totalImported}`);
+        if (totalSkippedNonEur > 0) statusParts.push(`skipped ${totalSkippedNonEur} non-EUR`);
+        if (totalSkippedDuplicate > 0) statusParts.push(`${totalSkippedDuplicate} duplicates`);
+        syncStatus.textContent = statusParts.join(', ');
 
         setTimeout(() => {
           syncIcon.textContent = '📧';
@@ -1439,6 +1503,8 @@
 
         if (totalImported > 0) {
           showToast(`Imported ${totalImported} purchase${totalImported !== 1 ? 's' : ''} from Gmail`);
+        } else if (totalSkippedNonEur > 0) {
+          showToast(`Found ${totalSkippedNonEur} non-EUR purchase${totalSkippedNonEur !== 1 ? 's' : ''} (use manual entry)`);
         } else {
           showToast('No new purchases found');
         }
